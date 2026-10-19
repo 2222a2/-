@@ -1,0 +1,37 @@
+# 本仓库本地依赖、密钥与运行时产物（不进入版本库）
+
+# Python
+.venv/
+.venv2/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 密钥（保留 *.env.example）
+.env
+.env.*
+!.env.example
+
+# 后端运行时：SQLite、上传、生成文档、向量库
+backend/data/
+chroma/
+.chroma/
+
+# Node / 前端构建
+node_modules/
+frontend/dist/
+frontend/dist_*/
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# 本地工具与系统杂项
+.workbuddy/
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini

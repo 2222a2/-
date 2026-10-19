@@ -1,0 +1,30 @@
+version: "3"
+# ───────────────────────────────────────────────────────────────────────────
+# OnlyOffice 部署关键约定（经典坑都在这）：
+#  1. 前端浏览器加载 OO 编辑器脚本 → 用 ONLYOFFICE_PUBLIC_URL（浏览器视角）
+#     本机开发默认 http://localhost:8080 即可（端口已映射到宿主机）。
+#  2. OO 服务端回源拉文件 / 回调后端 → 用 BACKEND_PUBLIC_URL（OO 视角）
+#     若 OO 在 Docker 里，它访问不到宿主机的 localhost:8000，
+#     必须设为 http://host.docker.internal:8000 或电脑局域网 IP:8000。
+#  3. Linux 上 Docker 默认不认识 host.docker.internal，靠下面的
+#     extra_hosts: host.docker.internal:host-gateway 把宿主机暴露给 OO 容器。
+#  4. backend 是本地直接跑的（不是本 compose 管理），启动时设好环境变量即可：
+#     BACKEND_PUBLIC_URL=http://host.docker.internal:8000 \
+#     ONLYOFFICE_PUBLIC_URL=http://localhost:8080 \
+#     .venv2/Scripts/python.exe -m uvicorn app.main:app --port 8000
+# ───────────────────────────────────────────────────────────────────────────
+services:
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    ports:
+      - "8080:80"
+    environment:
+      # MVP 关掉 JWT 简化接入；上生产前务必开启并配置密钥
+      - JWT_ENABLED=false
+    # 让 OO 容器能解析 host.docker.internal → 宿主机（Linux Docker 必需；
+    # Mac/Win Docker 默认已支持，写了也无害）。配合第 2 点的 BACKEND_PUBLIC_URL 使用。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./onlyoffice/data:/var/www/onlyoffice/Data
+    restart: unless-stopped
