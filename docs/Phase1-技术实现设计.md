@@ -2,7 +2,7 @@
 
 > 范围：Phase 1（A 档工作闭环 + M7 时间轴/专注）。
 > 本文只给实现方案与示意代码，不实际搭建项目脚手架。
-> 技术栈：前端 React+TS+Vite+zustand；后端 FastAPI+SQLite；向量 chromadb；文档生成 python-docx/pptx/openpyxl；编辑器 OnlyOffice（本地 Docker）。
+> 技术栈：前端 React+TS+Vite（状态用 React Context，**非**原方案的 zustand）；后端 FastAPI+SQLite；向量 chromadb（仅 opt-in）；文档生成 python-docx/pptx/openpyxl；**富文本 TipTap（`@tiptap/react`+`starter-kit`+`@tiptap/pm`，笔记编辑器，属 M0 资料底座）+ 后端 `nh3` 入库前 HTML 白名单净化（防 XSS）**；文档编辑器 OnlyOffice（本地 Docker）。
 
 ---
 
@@ -318,6 +318,19 @@ const colorOf = (t: Task) =>
 6. **复习提醒**（Phase 2 学习）：艾宾浩斯间隔（1/2/4/7/15 天）自动插复习节点并提醒。
 
 MVP 落地：先做 1+2+6（核心防漏），提醒通道用**应用内 toast + 浏览器 Notification API**，提前量在设置里可调。
+
+---
+
+## Q10 · 笔记富文本编辑器选型（M0 资料底座 / 笔记子系统）
+
+笔记正文需要 H1/H2/段落等富文本，且要能被 FTS5 全文检索、入库前防 XSS。
+
+- **前端：TipTap**（ProseMirror 封装）。直接依赖 `@tiptap/react` + `@tiptap/starter-kit` + `@tiptap/pm`（StarterKit 内含 heading/bold/italic/list/code 等常用节点）。
+  - 选型理由：比手搓 `contentEditable` 稳、比 CKEditor 轻；与 React 契合好；输出标准 HTML，便于落库与检索。
+  - 仅 `NoteEditor.tsx` 使用，不污染全局。
+- **后端：`nh3`**（`requirements.txt` 仅依赖）做入库前白名单净化：`knowledge.py` 用 `nh3.clean(html, tags=..., attributes=...)` 剥掉 `<script>`/`onclick`/`iframe`，失败退化为纯文本。
+  - 选型理由：笔记 HTML 来自用户编辑，必须服务端净化再落 `knowledge_card.rich_body`，否则存储型 XSS。
+- **该选型原始方案（PRD / 技术设计初稿）未规划**，随 M0 笔记子系统实现时引入，属合理技术扩张；已纳入技术栈单一事实来源（本文 + 审计表 + README）。
 
 ---
 

@@ -1,0 +1,59 @@
+#!/bin/sh
+# ============================================================================
+# 收口即审计 · git pre-commit hook
+# 阻塞规则：audit_consistency.py 出现 FAIL -> 退出非 0 -> 阻止本次提交。
+# 逃生口：
+#   SKIP_CONSISTENCY_AUDIT=1 git commit ...   临时跳过审计
+#   git commit --no-verify                    跳过所有 hooks（含本 hook）
+# 说明：审计范围为整个仓库实际状态（而非仅 staged 文件），符合"工程卫生收口"意图。
+# ============================================================================
+
+if [ -n "$SKIP_CONSISTENCY_AUDIT" ]; then
+  echo "[pre-commit] SKIP_CONSISTENCY_AUDIT 已设置，跳过一致性审计。"
+  exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$ROOT" ]; then
+  echo "[pre-commit] 无法定位 git 仓库根目录，跳过审计。" >&2
+  exit 0
+fi
+cd "$ROOT" || exit 0
+
+# --- 探测 python 解释器（Windows 上 PATH 常无 python，需用 WorkBuddy managed 版本） ---
+PYTHON_BIN=""
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="python"
+else
+  for cand in \
+    "$HOME/.workbuddy/binaries/python/versions/3.13.12/python.exe" \
+    "$HOME/.workbuddy/binaries/python/versions/3.10.0/python.exe" \
+    "/c/Users/用户/.workbuddy/binaries/python/versions/3.13.12/python.exe"; do
+    if [ -f "$cand" ]; then
+      PYTHON_BIN="$cand"
+      break
+    fi
+  done
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+  echo "[pre-commit] 未找到 python 解释器，跳过审计（请安装 python 或设 SKIP_CONSISTENCY_AUDIT）。" >&2
+  exit 0
+fi
+
+echo "[pre-commit] 运行一致性审计（收口即审计）..."
+
+"$PYTHON_BIN" scripts/audit_consistency.py --no-report
+RC=$?
+
+if [ "$RC" -ne 0 ]; then
+  echo "" >&2
+  echo "[pre-commit] ❌ 一致性审计存在 FAIL，已阻止提交。" >&2
+  echo "[pre-commit] 请修复 FAIL 项后重新 commit；紧急情况下可用: git commit --no-verify" >&2
+  exit 1
+fi
+
+echo "[pre-commit] ✅ 一致性审计通过。"
+exit 0

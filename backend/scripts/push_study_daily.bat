@@ -1,13 +1,21 @@
 @echo off
 setlocal
+
+REM ---- 从本地密钥文件加载敏感变量（.secrets.bat 已被 .gitignore 排除，不进仓库）----
+if exist "%~dp0.secrets.bat" (
+  call "%~dp0.secrets.bat"
+) else (
+  echo [WARN] 未找到 %~dp0.secrets.bat，SERVERCHAN_KEY / STUDY_PAGE_TOKEN 缺失，推送与写库将失败。
+  echo [WARN] 请复制 .secrets.bat.example 为同目录 .secrets.bat 并填入你的 key。
+)
+
 REM ============================================================
 REM  备考任务·每日 23:00 自动推送（由 Windows 任务计划程序调用）
 REM  作用：生成明天任务写入平台，并发微信推送（科目摘要+链接）。
 REM  依赖：backend\.venv2 或 .venv 里的 Python。
 REM ============================================================
 
-REM ---- 必填：备考页口令（与 start_study.bat / 后端 STUDY_PAGE_TOKEN 保持一致）----
-set STUDY_PAGE_TOKEN=guoguo2026
+REM ---- 备考页口令 STUDY_PAGE_TOKEN：已从 .secrets.bat 本地加载（勿在此硬编码）----
 
 REM ---- 后端 API 地址（写库用，默认 8000）----
 set STUDY_API_BASE=http://127.0.0.1:8000/api
@@ -15,9 +23,7 @@ set STUDY_API_BASE=http://127.0.0.1:8000/api
 REM ---- 微信点开链接的基地址（同 WiFi 用局域网IP，外出用 cloudflared 公网地址）----
 set STUDY_WEB_BASE_URL=http://127.0.0.1:5173
 
-REM ---- 推送通道（四选一，此处用方糖 ServerChan，推到个人微信）----
-REM  ↓↓↓ 方糖 ServerChan key：请填入【你自己的】ServerChan token（旧 key 已泄露，请去 sct.ftqq.com 后台轮换）↓↓↓
-set SERVERCHAN_KEY=your_serverchan_key_here
+REM ---- 推送通道：ServerChan key 已从 .secrets.bat 本地加载（勿在此硬编码）----
 
 REM ---- 选 Python 虚拟环境：优先 .venv2，回退 .venv，再回退系统 python ----
 set ROOT=%~dp0..

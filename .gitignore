@@ -16,6 +16,9 @@ __pycache__/
 .env.*
 !.env.example
 
+# 本地脚本密钥（push_study_daily.bat 运行时 call 加载，绝不进仓库）
+backend/scripts/.secrets.bat
+
 # 后端运行时：SQLite、上传、生成文档、向量库
 backend/data/
 chroma/

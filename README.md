@@ -40,6 +40,26 @@ worklearn-platform/
 └── docker-compose.yml       # 本地 OnlyOffice Docs 服务（端口 8080）
 ```
 
+## 技术栈（单一事实来源）
+
+> 本表是技术选型的**唯一权威来源**，须与 `docs/Phase1-技术实现设计.md`、`docs/阶段技术约束一致性审计.md` 三处保持一致；新增/变更依赖须同步更新三处。每个 Phase 收口跑 `python scripts/audit_consistency.py` 做一致性审计，结论入 `docs/`。
+
+| 层 | 选型 | 说明 |
+|----|------|------|
+| 前端框架 | React 18 + TypeScript + Vite 5 | 与原始方案一致 |
+| 前端状态 | React Context + useState（`FocusProvider`/`DocEditorProvider`） | 原始方案写 zustand，实现改用 Context（有意 MVP 取舍，已记录） |
+| 前端富文本 | **TipTap**（`@tiptap/react`+`starter-kit`+`@tiptap/pm`）+ 后端 **nh3** 净化 | 笔记子系统（M0 资料底座）实现新增，方案未规划、记录在案 |
+| 文档编辑器 | `@onlyoffice/document-editor-react` v1.6（本地 Docker 8080） | 与方案一致 |
+| HTTP 客户端 | axios | 一致 |
+| 后端框架 | FastAPI 0.115 + uvicorn + Pydantic 2 | 一致 |
+| 数据库 | SQLite 单文件 + FTS5 trigram | 一致，7 业务表 |
+| AI 抽象 | `LLMProvider`（豆包默认 + `MockProvider` 离线）+ Function Calling | 一致；预留通义/GLM/Ollama 仅留位 |
+| RAG | 默认 FTS5；`chromadb` 可选 | 原始方案主推 chromadb，实际未默认开启（有意取舍） |
+| 文档生成 | python-docx / openpyxl / python-pptx + reportlab（PDF） | 一致 |
+| 后端净化 | nh3（笔记 HTML 白名单防 XSS） | 随 TipTap 引入 |
+| 拼音排序 | pypinyin | 实现细节 |
+| 部署 | OnlyOffice 本地 Docker（`docker-compose.yml`） | 一致 |
+
 ## M2 AI 助手层（已完成）
 - **可插拔模型**：`LLMProvider` 抽象统一 `chat()`；豆包走 OpenAI 兼容协议（改 base_url 即可），预留通义/GLM/Ollama。
 - **离线可用**：未配 `ARK_API_KEY` 时自动用 `MockProvider`，整条工具循环无需网络即可联调/测试。

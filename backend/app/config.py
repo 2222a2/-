@@ -6,6 +6,14 @@
 from pathlib import Path
 import os
 
+# 让 backend/.env 生效（README 的 cp .env.example .env 才有意义）。
+# load_dotenv 找不到 .env 时静默跳过，不影响其他启动路径；且不覆盖已存在的环境变量。
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 # backend/ 目录（app 的父目录）
 BASE_DIR = Path(__file__).resolve().parent.parent
 
