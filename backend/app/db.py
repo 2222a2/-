@@ -48,8 +48,11 @@ CREATE TABLE IF NOT EXISTS study_task (
     subject     TEXT,                 -- math | english | cs408 | ds | other
     title       TEXT NOT NULL,
     done        INTEGER DEFAULT 0,    -- 0/1
-    source      TEXT DEFAULT 'auto',  -- auto(生成器) | manual(手动添加)
+    source      TEXT DEFAULT 'auto',  -- auto(生成器) | manual(手动添加) | review(遗忘曲线复习)
     sort_order  INTEGER DEFAULT 0,
+    review_of   INTEGER DEFAULT NULL, -- 指向原始新学任务 id；新学任务为 NULL
+    review_stage INTEGER DEFAULT NULL, -- 1..5，对应第几轮复习
+    due_offset  INTEGER DEFAULT NULL, -- 1/2/4/7/15，相对学习日的天数偏移
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now'))
 );
@@ -96,12 +99,45 @@ CREATE TABLE IF NOT EXISTS report (
     created_at   TEXT DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS reward (
+CREATE TABLE IF NOT EXISTS reward_account (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),  -- 单用户固定 1 行
+    points       INTEGER DEFAULT 0,    -- 累计积分（同时作为经验）
+    level        INTEGER DEFAULT 1,
+    streak       INTEGER DEFAULT 0,    -- 连续打卡天数
+    last_checkin TEXT,                 -- 最近打卡日期 YYYY-MM-DD
+    created_at   TEXT DEFAULT (datetime('now')),
+    updated_at   TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS reward_checkin (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    date       TEXT NOT NULL,         -- YYYY-MM-DD
+    points     INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS reward_badge (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    badge_key  TEXT NOT NULL UNIQUE,  -- first_task | first_review | streak_3/7/30 | points_100/500
+    badge_name TEXT NOT NULL,
+    earned_at  TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS reward_video (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    points       INTEGER DEFAULT 0,
-    badges_json  TEXT,
-    videos_json  TEXT,
+    title        TEXT,
+    path         TEXT,                 -- data/videos/review_<ts>.mp4
+    period_start TEXT,
+    period_end   TEXT,
     created_at   TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS reward_event (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type  TEXT NOT NULL,         -- task_done | review_done | checkin | badge
+    points      INTEGER DEFAULT 0,      -- 本次增减积分
+    ref_id      INTEGER,                -- 关联 study_task.id 等
+    created_at  TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_card (
@@ -195,6 +231,25 @@ def migrate_schema() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_card_package ON knowledge_card(package_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_card_itemtype ON knowledge_card(item_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_card_created ON knowledge_card(created_at)")
+
+    # 移除 Phase1 遗留的空壳 reward 表（仅 (id,points,badges_json,videos_json)，无数据），改5表模型
+    try:
+        conn.execute("DROP TABLE reward")
+    except Exception:
+        pass  # 新库本就没有旧 reward 表，忽略
+
+    # study_task 扩展列（遗忘曲线复习用，缺才加；新库由 SCHEMA 自带）
+    _st_cols = {r[1] for r in conn.execute("PRAGMA table_info(study_task)").fetchall()}
+    _st_alters = []
+    for _col, _ctype in (
+        ("review_of", "INTEGER DEFAULT NULL"),
+        ("review_stage", "INTEGER DEFAULT NULL"),
+        ("due_offset", "INTEGER DEFAULT NULL"),
+    ):
+        if _col not in _st_cols:
+            _st_alters.append(f"ALTER TABLE study_task ADD COLUMN {_col} {_ctype}")
+    for _a in _st_alters:
+        conn.execute(_a)
     conn.commit()
 
     # 回填旧行
@@ -1010,6 +1065,78 @@ def delete_study_task(task_id: int) -> bool:
     return cur.rowcount > 0
 
 
+# --- 遗忘曲线复习（M5）：复用 study_task 表，加 review_of/review_stage/due_offset 三列记录血缘 ---
+# 触发点：原始新学任务 done 0→1 时由路由调用 spawn_reviews_for_task 生成 1/2/4/7/15 天后复习；
+# 复习任务 done=1 不连锁（只在 review_of IS NULL 的原始任务上触发），避免指数爆炸。
+
+REVIEW_OFFSETS = [1, 2, 4, 7, 15]  # 艾宾浩斯经验节点，可调
+
+
+def get_study_task_done(task_id: int) -> int:
+    """取某备考任务当前的 done 值（0/1）。找不到返回 0（PATCH 触发判定用）。"""
+    conn = get_conn()
+    row = conn.execute("SELECT done FROM study_task WHERE id=?", (task_id,)).fetchone()
+    conn.close()
+    return row["done"] if row else 0
+
+
+def spawn_reviews_for_task(task_id: int) -> int:
+    """原始新学任务被标记完成时，生成 1/2/4/7/15 天后的复习任务。返回生成条数。
+
+    幂等：先按 review_of 清掉该任务已有的复习任务再插，重复勾选不会重复节点。
+    只在 review_of IS NULL 的原始任务上触发；复习任务 done=1 不会连锁生成。
+    """
+    from datetime import datetime, timedelta
+
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id, date, period, subject, title FROM study_task "
+        "WHERE id=? AND review_of IS NULL",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return 0
+    base_date = row["date"]
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # 幂等清空：删除该原始任务已有的复习节点（取消再勾也不会翻倍）
+    conn.execute(
+        "DELETE FROM study_task WHERE source='review' AND review_of=?",
+        (task_id,),
+    )
+
+    count = 0
+    for stage, offset in enumerate(REVIEW_OFFSETS, start=1):
+        due = (datetime.strptime(base_date, "%Y-%m-%d") + timedelta(days=offset)).strftime("%Y-%m-%d")
+        if due < today:
+            continue  # 理论不会发生（offset>=1），保险跳过过去日期
+        conn.execute(
+            """INSERT INTO study_task
+               (date, period, subject, title, done, source, sort_order,
+                review_of, review_stage, due_offset)
+               VALUES (?,?,?,?,0,'review',0,?,?,?)""",
+            (due, row["period"], row["subject"],
+             f"复习：{row['title']}", task_id, stage, offset),
+        )
+        count += 1
+    conn.commit()
+    conn.close()
+    return count
+
+
+def list_due_reviews(date_str: str) -> list[dict]:
+    """返回某天到期且未完成的复习任务（供前端'今日待复习'卡片）。"""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM study_task WHERE date=? AND source='review' AND done=0 "
+        "ORDER BY review_stage",
+        (date_str,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def weekly_progress(week_start: str, week_end: str) -> dict:
     """按周聚合完成度：总完成、各科目完成、每日完成。"""
     conn = get_conn()
@@ -1041,6 +1168,39 @@ def weekly_progress(week_start: str, week_end: str) -> dict:
         "by_subject": by_subject,
         "by_date": by_date,
     }
+
+
+def daily_completion_map(start: str, end: str) -> list[dict]:
+    """返回 [start, end] 区间内每一天的完成度（total/done/rate），按日期升序。
+
+    用于前端进度热力图：区间内的每一天都返回（含无任务的空白天，rate=0），
+    这样前端能画一张完整连续的日历网格，而不是只画有数据的零散几天。
+    """
+    from datetime import datetime, timedelta
+
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM study_task WHERE date>=? AND date<=?",
+        (start, end),
+    ).fetchall()
+    conn.close()
+    by_date: dict = {}
+    for r in rows:
+        d = r["date"]
+        rec = by_date.setdefault(d, {"date": d, "total": 0, "done": 0})
+        rec["total"] += 1
+        rec["done"] += 1 if r["done"] else 0
+    # 填充区间全部日期（即使当天无任务，也补一条 rate=0）
+    result = []
+    cur = datetime.strptime(start, "%Y-%m-%d")
+    end_d = datetime.strptime(end, "%Y-%m-%d")
+    while cur <= end_d:
+        ds = cur.strftime("%Y-%m-%d")
+        rec = by_date.get(ds, {"date": ds, "total": 0, "done": 0})
+        rec["rate"] = round(rec["done"] / rec["total"], 3) if rec["total"] else 0
+        result.append(rec)
+        cur += timedelta(days=1)
+    return result
 
 
 # ------------------------- M1 文档中心（doc）-------------------------
@@ -1218,3 +1378,207 @@ def list_focus_sessions(limit: int = 50) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ------------------------- M6 奖励系统（reward）-------------------------
+# 设计：单用户固定 reward_account(id=1) 一行；积分来自"完成任务/复习/打卡"三类行为；
+# 徽章由 evaluate_badges() 基于账户状态自动判定授予；复盘视频落 reward_video。
+# 行为钩子复用 study_tasks PATCH done 0→1（见 study_tasks.patch_study_task）。
+
+REWARD_TASK = 5      # 完成一个原始学习任务
+REWARD_REVIEW = 3    # 完成一次复习打卡
+REWARD_CHECKIN = 2   # 每日打卡
+LEVEL_STEP = 100     # 每 100 积分升 1 级
+
+BADGES = [
+    ("first_task", "初次完成", "完成第一个学习任务"),
+    ("first_review", "复习起步", "完成第一次复习打卡"),
+    ("streak_3", "三日不断", "连续打卡 3 天"),
+    ("streak_7", "一周坚持", "连续打卡 7 天"),
+    ("streak_30", "月度全勤", "连续打卡 30 天"),
+    ("points_100", "百分达人", "累计积分达 100"),
+    ("points_500", "积分富翁", "累计积分达 500"),
+]
+
+
+def init_reward_account() -> None:
+    """确保单用户账户行存在（id 固定为 1）。"""
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO reward_account (id, points, level, streak) VALUES (1,0,1,0)"
+    )
+    conn.commit()
+    conn.close()
+
+
+def _award(points: int, event_type: str, ref_id: int | None = None) -> None:
+    """写入一条积分流水并累加账户积分。"""
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO reward_event (event_type, points, ref_id) VALUES (?,?,?)",
+        (event_type, points, ref_id),
+    )
+    conn.execute(
+        "UPDATE reward_account SET points=points+?, updated_at=datetime('now') WHERE id=1",
+        (points,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def add_reward_event(points: int, event_type: str, ref_id: int | None = None) -> dict:
+    """统一加分入口（路由钩子与外部调用），返回最新账户状态。"""
+    init_reward_account()
+    _award(points, event_type, ref_id)
+    return get_reward_state()
+
+
+def get_study_task(task_id: int) -> dict | None:
+    """取单个备考任务（奖励钩子用来判断 source 是否为 'review'）。"""
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM study_task WHERE id=?", (task_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def checkin_today() -> dict:
+    """每日打卡：+REWARD_CHECKIN 积分，并按昨天是否打卡更新连续天数 streak。"""
+    from datetime import datetime, timedelta
+
+    init_reward_account()
+    today = datetime.now().strftime("%Y-%m-%d")
+    conn = get_conn()
+    existing = conn.execute("SELECT id FROM reward_checkin WHERE date=?", (today,)).fetchone()
+    if existing:
+        conn.close()
+        return {"ok": False, "already": True, "state": get_reward_state()}
+    acc = conn.execute("SELECT streak, last_checkin FROM reward_account WHERE id=1").fetchone()
+    streak = acc["streak"] if acc else 0
+    last = acc["last_checkin"] if acc else None
+    yest = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    streak = streak + 1 if last == yest else 1
+    conn.execute("INSERT INTO reward_checkin (date, points) VALUES (?,?)", (today, REWARD_CHECKIN))
+    conn.execute(
+        "UPDATE reward_account SET streak=?, last_checkin=?, points=points+?, updated_at=datetime('now') WHERE id=1",
+        (streak, today, REWARD_CHECKIN),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "streak": streak, "state": get_reward_state()}
+
+
+def get_reward_state() -> dict:
+    """返回账户全景：积分/等级/经验/连续打卡/已得徽章/打卡总数。"""
+    init_reward_account()
+    conn = get_conn()
+    acc = conn.execute("SELECT * FROM reward_account WHERE id=1").fetchone()
+    earned_rows = conn.execute(
+        "SELECT badge_key, badge_name, earned_at FROM reward_badge ORDER BY id"
+    ).fetchall()
+    earned_map = {r["badge_key"]: r["earned_at"] for r in earned_rows}
+    # 徽章墙：完整 7 枚定义 + 是否已得（前端据此高亮/灰显）
+    all_badges = [
+        {
+            "badge_key": key,
+            "badge_name": name,
+            "description": desc,
+            "earned": key in earned_map,
+            "earned_at": earned_map.get(key),
+        }
+        for (key, name, desc) in BADGES
+    ]
+    checkin_total = conn.execute("SELECT COUNT(*) c FROM reward_checkin").fetchone()["c"]
+    conn.close()
+    acc = dict(acc)
+    points = acc["points"]
+    return {
+        "points": points,
+        "level": points // LEVEL_STEP + 1,
+        "exp": points % LEVEL_STEP,
+        "exp_need": LEVEL_STEP,
+        "streak": acc["streak"],
+        "last_checkin": acc["last_checkin"],
+        "badges": [dict(b) for b in earned_rows],
+        "all_badges": all_badges,
+        "checkin_total": checkin_total,
+    }
+
+
+def grant_badge(badge_key: str, badge_name: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO reward_badge (badge_key, badge_name) VALUES (?,?)",
+        (badge_key, badge_name),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_badges() -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM reward_badge ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def evaluate_badges() -> list[str]:
+    """根据账户状态自动授予应得徽章，返回本次新授予的 badge_key 列表。"""
+    state = get_reward_state()
+    conn = get_conn()
+    task_done = conn.execute(
+        "SELECT COUNT(*) c FROM reward_event WHERE event_type='task_done'"
+    ).fetchone()["c"]
+    review_done = conn.execute(
+        "SELECT COUNT(*) c FROM reward_event WHERE event_type='review_done'"
+    ).fetchone()["c"]
+    conn.close()
+    earned = {b["badge_key"] for b in state["badges"]}
+    streak = state["streak"]
+    points = state["points"]
+    new_badges: list[str] = []
+
+    def try_grant(key: str, name: str, cond: bool) -> None:
+        if cond and key not in earned:
+            grant_badge(key, name)
+            new_badges.append(key)
+
+    for key, name, _desc in BADGES:
+        cond = {
+            "first_task": task_done >= 1,
+            "first_review": review_done >= 1,
+            "streak_3": streak >= 3,
+            "streak_7": streak >= 7,
+            "streak_30": streak >= 30,
+            "points_100": points >= 100,
+            "points_500": points >= 500,
+        }.get(key, False)
+        try_grant(key, name, cond)
+    return new_badges
+
+
+def list_videos() -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM reward_video ORDER BY id DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def insert_video(title: str, path: str, period_start: str, period_end: str) -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO reward_video (title, path, period_start, period_end) VALUES (?,?,?,?)",
+        (title, path, period_start, period_end),
+    )
+    vid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return vid
+
+
+def get_video(vid: int) -> dict | None:
+    """按 id 取一条复盘视频记录（供静态文件路由定位文件路径）。"""
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM reward_video WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+

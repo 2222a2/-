@@ -139,8 +139,11 @@ class StudyTaskOut(BaseModel):
     subject: Optional[str] = None
     title: str
     done: int = 0
-    source: str = "auto"
+    source: str = "auto"            # auto(生成器) | manual(手动) | review(遗忘曲线复习)
     sort_order: int = 0
+    review_of: Optional[int] = None     # 指向原始新学任务 id；新学任务为 NULL
+    review_stage: Optional[int] = None  # 1..5，第几轮复习
+    due_offset: Optional[int] = None    # 1/2/4/7/15，相对学习日的天数偏移
     created_at: Optional[str] = None
 
 
@@ -152,6 +155,13 @@ class WeeklyProgressOut(BaseModel):
     rate: float = 0
     by_subject: dict = {}
     by_date: dict = {}
+
+
+class DailyCompletionOut(BaseModel):
+    date: str                   # YYYY-MM-DD
+    total: int = 0              # 当天任务总数
+    done: int = 0               # 当天已完成数
+    rate: float = 0             # done/total，0~1；无任务为 0
 
 
 # ------------------------- M4 分析引擎契约 -------------------------

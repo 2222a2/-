@@ -67,11 +67,34 @@ def get_study_tasks(
 
 @router.patch("/{task_id}", response_model=dict)
 def patch_study_task(task_id: int, done: int | None = None, title: str | None = None):
-    """修改单个任务：勾选状态(done) 或标题(title)。"""
+    """修改单个任务：勾选状态(done) 或标题(title)。
+
+    当原始新学任务 done 从 0→1 的瞬间，自动生成艾宾浩斯复习节点（1/2/4/7/15 天）。
+    """
     if done is None and title is None:
         raise HTTPException(status_code=400, detail="nothing to update")
+    before = db.get_study_task_done(task_id)
     db.patch_study_task(task_id, done=done, title=title)
+    if done == 1 and before == 0:
+        reviews_spawned = db.spawn_reviews_for_task(task_id)
+        # M6 奖励钩子：原始任务 +5，复习任务 +3（复用同一触发点，不各写一遍）
+        t = db.get_study_task(task_id)
+        is_review = bool(t and t.get("source") == "review")
+        points = db.REWARD_REVIEW if is_review else db.REWARD_TASK
+        db.add_reward_event(points, "review_done" if is_review else "task_done", task_id)
+        new_badges = db.evaluate_badges()
+        return {
+            "ok": True, "id": task_id, "reviews_spawned": reviews_spawned,
+            "reward_points": points, "new_badges": new_badges,
+        }
     return {"ok": True, "id": task_id}
+
+
+@router.get("/reviews/due", response_model=list[schemas.StudyTaskOut])
+def due_reviews(date: str | None = None):
+    """今日（或指定 date）到期未做的复习任务，供'今日待复习'卡片。"""
+    base = date or datetime.now().strftime("%Y-%m-%d")
+    return db.list_due_reviews(base)
 
 
 @router.delete("/{task_id}", response_model=dict)
@@ -105,3 +128,11 @@ def weekly_progress(date: str | None = None):
     ws = _monday_of(base)
     we = _sunday_of(base)
     return db.weekly_progress(ws, we)
+
+
+@router.get("/heatmap", response_model=list[schemas.DailyCompletionOut])
+def heatmap(days: int = 90):
+    """最近 days 天（默认 90）每日完成度，供进度热力图。"""
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    return db.daily_completion_map(start, end)

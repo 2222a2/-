@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { study, StudyTask, WeeklyProgress, setStudyToken } from '../api/client'
+import { study, StudyTask, WeeklyProgress, DailyCompletion, setStudyToken } from '../api/client'
 
 // 后端返回 401（口令错/未带）时，弹出口令框让用户重新输
 function is401(e: any): boolean {
@@ -47,12 +47,19 @@ export default function StudyTasksPage() {
   }, [])
 
   const [date, setDate] = useState(initialDate)
-  const [view, setView] = useState<'day' | 'week'>('day')
+  const [view, setView] = useState<'day' | 'week' | 'heatmap' | 'month'>('day')
   const [tasks, setTasks] = useState<StudyTask[]>([])
   const [weekly, setWeekly] = useState<WeeklyProgress | null>(null)
   const [loading, setLoading] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [draftTitle, setDraftTitle] = useState('')
+  // 今日到期未做的复习任务（"今日待复习"卡片）
+  const [dueReviews, setDueReviews] = useState<StudyTask[]>([])
+  // 进度热力图数据（近 90 天每日完成度）
+  const [heatmap, setHeatmap] = useState<DailyCompletion[]>([])
+  // 排课月视图：当前显示的月份锚点（YYYY-MM-01）与按日期分组的任务
+  const [monthAnchor, setMonthAnchor] = useState<string>(() => todayStr().slice(0, 8) + '01')
+  const [monthMap, setMonthMap] = useState<Record<string, StudyTask[]>>({})
   // 每段新增表单的本地状态（key = period，value = {subject, title}）
   const [addForm, setAddForm] = useState<Record<string, { subject: string; title: string }>>({})
   // 口令保护：后端设了 STUDY_PAGE_TOKEN 时，首次打开会被 401 拦截，这里弹框让用户输入
@@ -89,11 +96,53 @@ export default function StudyTasksPage() {
     else loadWeek()
   }
 
+  // 今日到期未做的复习任务（"今日待复习"卡片用），基于今天，与所选 date 无关
+  async function loadDueReviews() {
+    try {
+      const r = await study.dueReviews(todayStr())
+      setDueReviews(r.data)
+    } catch (e) { if (is401(e)) setNeedToken(true) }
+  }
+
+  // 进度热力图：近 90 天每日完成度
+  async function loadHeatmap() {
+    setLoading(true)
+    try {
+      const r = await study.heatmap(90)
+      setHeatmap(r.data)
+    } catch (e) { if (is401(e)) setNeedToken(true) }
+    finally { setLoading(false) }
+  }
+
+  // 排课月视图：拉取整月任务并按下 date 分组
+  async function loadMonth() {
+    setLoading(true)
+    try {
+      const [y, m] = monthAnchor.split('-').map(Number)
+      const start = `${y}-${String(m).padStart(2, '0')}-01`
+      const end = `${y}-${String(m).padStart(2, '0')}-${new Date(y, m, 0).getDate()}`
+      const r = await study.listRange(start, end)
+      const map: Record<string, StudyTask[]> = {}
+      for (const t of r.data) (map[t.date] ||= []).push(t)
+      setMonthMap(map)
+    } catch (e) { if (is401(e)) setNeedToken(true) }
+    finally { setLoading(false) }
+  }
+
+  // 上/下月切换（monthAnchor 移到相邻月 1 号）
+  function shiftMonth(delta: number) {
+    const [y, m] = monthAnchor.split('-').map(Number)
+    const d = new Date(y, m - 1 + delta, 1)
+    setMonthAnchor(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`)
+  }
+
   useEffect(() => {
-    if (view === 'day') loadDay()
-    else loadWeek()
+    if (view === 'day') { loadDay(); loadDueReviews() }
+    else if (view === 'week') loadWeek()
+    else if (view === 'month') loadMonth()
+    else loadHeatmap()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date, view])
+  }, [date, view, monthAnchor])
 
   // 按时间段分组（period 为空归到 other）
   const grouped = useMemo(() => {
@@ -110,6 +159,7 @@ export default function StudyTasksPage() {
     try {
       await study.patch(t.id, { done: t.done ? 0 : 1 })
       setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, done: t.done ? 0 : 1 } : x)))
+      if (t.source === 'review') loadDueReviews()  // 复习勾掉后即时从"今日待复习"移除
     } catch (e) { if (is401(e)) setNeedToken(true) }
   }
   async function commitTitle(t: StudyTask) {
@@ -152,11 +202,15 @@ export default function StudyTasksPage() {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button onClick={() => setView('day')} style={tabBtn(view === 'day')}>今日</button>
           <button onClick={() => setView('week')} style={tabBtn(view === 'week')}>本周进度</button>
+          <button onClick={() => setView('heatmap')} style={tabBtn(view === 'heatmap')}>热力图</button>
+          <button onClick={() => setView('month')} style={tabBtn(view === 'month')}>月视图</button>
         </div>
       </div>
 
       {view === 'day' ? (
         <>
+          <DueReviewsCard items={dueReviews} onToggle={toggleDone} />
+
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '16px 0' }}>
             <button onClick={() => setDate(shiftDate(date, -1))} style={navBtn()} aria-label="前一天">←</button>
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...navBtn(), cursor: 'text' }} />
@@ -182,7 +236,7 @@ export default function StudyTasksPage() {
                 </h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {list.map((t) => (
-                    <div key={t.id} style={card(!!t.done)}>
+                    <div key={t.id} style={{ ...card(!!t.done), ...reviewStyle(t) }}>
                       <input type="checkbox" checked={!!t.done} onChange={() => toggleDone(t)} style={{ width: 18, height: 18 }} />
                       {editingId === t.id ? (
                         <input
@@ -201,6 +255,9 @@ export default function StudyTasksPage() {
                         >
                           {t.title}
                         </span>
+                      )}
+                      {t.source === 'review' && (
+                        <span style={reviewTag()}>复习 · 第{t.review_stage}轮</span>
                       )}
                       {t.subject && (
                         <span style={subjectTag(t.subject)}>{SUBJECT_LABELS[t.subject] || t.subject}</span>
@@ -233,8 +290,18 @@ export default function StudyTasksPage() {
             )
           })}
         </>
-      ) : (
+      ) : view === 'week' ? (
         <WeekView weekly={weekly} loading={loading} />
+      ) : view === 'month' ? (
+        <MonthView
+          anchor={monthAnchor}
+          onPrev={() => shiftMonth(-1)}
+          onNext={() => shiftMonth(1)}
+          onPick={(d) => { setDate(d); setView('day') }}
+          monthMap={monthMap}
+        />
+      ) : (
+        <StudyHeatmap data={heatmap} onPick={(d) => { setDate(d); setView('day') }} />
       )}
 
       {/* 口令保护弹层：后端设了 STUDY_PAGE_TOKEN 且未带/带错时显示 */}
@@ -261,6 +328,128 @@ export default function StudyTasksPage() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// 今日待复习卡片：列出今天到期未做的复习任务（艾宾浩斯节点），勾掉即打卡
+function DueReviewsCard({ items, onToggle }: { items: StudyTask[]; onToggle: (t: StudyTask) => void }) {
+  if (items.length === 0) return null
+  return (
+    <div style={{ background: '#FFF7E6', border: '1px solid #FFE0A3', borderRadius: 12, padding: 14, margin: '12px 0' }}>
+      <div style={{ fontWeight: 600, marginBottom: 8, color: '#B26A00' }}>🔁 今日待复习（{items.length}）</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {items.map((t) => (
+          <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input type="checkbox" checked={false} onChange={() => onToggle(t)} style={{ width: 18, height: 18 }} />
+            <span style={{ flex: 1, cursor: 'pointer', color: '#8a5a00' }} onClick={() => onToggle(t)}>{t.title}</span>
+            <span style={{ fontSize: 11, color: '#B26A00', background: '#FFE9C2', padding: '2px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>
+              第{t.review_stage}轮 · 学后第{t.due_offset}天
+            </span>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: '#B8860B', marginTop: 8 }}>勾掉即算复习打卡，不影响原计划任务。</div>
+    </div>
+  )
+}
+
+// 学习进度热力图：近 90 天每日完成率网格，色阶映射 rate；点格跳当天
+function StudyHeatmap({ data, onPick }: { data: DailyCompletion[]; onPick: (date: string) => void }) {
+  if (data.length === 0) {
+    return <p style={{ color: '#999', padding: 24, textAlign: 'center', background: '#fafafa', borderRadius: 10 }}>暂无数据，先去「今日」勾几天的任务吧。</p>
+  }
+  const heatColor = (rate: number) => {
+    if (rate <= 0) return '#eee'
+    const a = Math.max(0.15, Math.min(1, rate))
+    return `rgba(24,95,165,${a.toFixed(2)})`
+  }
+  return (
+    <div style={{ marginTop: 16 }}>
+      <h3 style={{ fontSize: 15, margin: '0 0 8px' }}>📊 学习进度热力图（近 90 天）</h3>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+        {data.map((d) => (
+          <div
+            key={d.date}
+            title={`${d.date}：${d.done}/${d.total} 完成（${Math.round(d.rate * 100)}%）`}
+            onClick={() => onPick(d.date)}
+            style={{
+              aspectRatio: '1 / 1',
+              background: heatColor(d.rate),
+              borderRadius: 4,
+              cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 10, color: d.rate > 0.5 ? '#fff' : '#666',
+            }}
+          >
+            {d.date.slice(5)}
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: '#999', marginTop: 8 }}>
+        颜色越深 = 当天完成率越高；点任意格子跳到那一天。
+      </div>
+    </div>
+  )
+}
+
+// 排课月视图：当月日历，每格完成率底色 + 已完成/总数角标，点格跳当天去勾任务
+function MonthView({ anchor, onPrev, onNext, onPick, monthMap }: {
+  anchor: string
+  onPrev: () => void
+  onNext: () => void
+  onPick: (date: string) => void
+  monthMap: Record<string, StudyTask[]>
+}) {
+  const [y, m] = anchor.split('-').map(Number)
+  const firstWeekday = new Date(y, m - 1, 1).getDay() // 0=周日
+  const daysInMonth = new Date(y, m, 0).getDate()
+  const lead = (firstWeekday + 6) % 7 // 周一开头：周日排到最后
+  const cells: (number | null)[] = []
+  for (let i = 0; i < lead; i++) cells.push(null)
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d)
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <button onClick={onPrev} style={navBtn()}>← 上月</button>
+        <strong style={{ fontSize: 16 }}>{y}年{m}月</strong>
+        <button onClick={onNext} style={navBtn()}>下月 →</button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 4 }}>
+        {['一', '二', '三', '四', '五', '六', '日'].map((w) => (
+          <div key={w} style={{ textAlign: 'center', fontSize: 12, color: '#999' }}>{w}</div>
+        ))}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+        {cells.map((d, i) => {
+          if (d === null) return <div key={`e${i}`} />
+          const ds = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+          const list = monthMap[ds] || []
+          const done = list.filter((t) => t.done).length
+          const rate = list.length ? done / list.length : 0
+          return (
+            <div
+              key={ds}
+              onClick={() => onPick(ds)}
+              title={`${ds}：${done}/${list.length} 完成`}
+              style={{
+                minHeight: 64, borderRadius: 6, cursor: 'pointer', padding: 6,
+                background: rate > 0 ? `rgba(24,95,165,${Math.max(0.15, rate).toFixed(2)})` : '#f5f5f5',
+                border: ds === todayStr() ? '2px solid #185FA5' : '1px solid #eee',
+                color: rate > 0.5 ? '#fff' : '#333',
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 600 }}>{d}</div>
+              {list.length > 0 && (
+                <div style={{ fontSize: 11, marginTop: 4 }}>✓ {done}/{list.length}</div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <div style={{ fontSize: 11, color: '#999', marginTop: 8 }}>
+        底色深浅 = 当天完成率；数字 = 已完成/总数；点格子跳到那一天去勾任务。
+      </div>
     </div>
   )
 }
@@ -353,6 +542,21 @@ function subjectTag(subject: string): React.CSSProperties {
   return {
     fontSize: 12, padding: '2px 8px', borderRadius: 999, color: '#fff',
     background: SUBJECT_COLORS[subject] || '#888', whiteSpace: 'nowrap',
+  }
+}
+// 复习任务卡片：浅黄底色区分"新学"；非复习任务返回空（不覆盖默认 card 样式）
+function reviewStyle(t: StudyTask): React.CSSProperties {
+  if (t.source !== 'review') return {}
+  return {
+    background: t.done ? '#fdf6ec' : '#fffaf0',
+    borderColor: t.done ? '#f0e0c0' : '#ffe0a3',
+  }
+}
+// 复习任务的小标签样式（"复习 · 第N轮"）
+function reviewTag(): React.CSSProperties {
+  return {
+    fontSize: 11, color: '#B26A00', background: '#FFE9C2',
+    padding: '2px 8px', borderRadius: 999, whiteSpace: 'nowrap',
   }
 }
 function delBtn(): React.CSSProperties {

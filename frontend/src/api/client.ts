@@ -121,8 +121,11 @@ export interface StudyTask {
   subject: string | null     // math | english | cs408 | ds | other
   title: string
   done: number               // 0 / 1
-  source: string             // auto(生成器) | manual(手动)
+  source: string             // auto(生成器) | manual(手动) | review(遗忘曲线复习)
   sort_order: number
+  review_of: number | null   // 指向原始新学任务 id；新学任务为 null
+  review_stage: number | null // 1..5，第几轮复习
+  due_offset: number | null  // 1/2/4/7/15，相对学习日的天数偏移
   created_at: string | null
 }
 
@@ -134,6 +137,14 @@ export interface WeeklyProgress {
   rate: number               // 0~1
   by_subject: Record<string, { total: number; done: number }>
   by_date: Record<string, { total: number; done: number }>
+}
+
+// 单日完成度（进度热力图用）
+export interface DailyCompletion {
+  date: string
+  total: number
+  done: number
+  rate: number               // 0~1
 }
 
 // 备考任务页口令：从 localStorage 读取（用户首次输入后存下），随每个 study 请求带上。
@@ -162,6 +173,15 @@ export const study = {
     sort_order?: number
   }) => api.post('/study-tasks/add', null, { params: body, headers: { 'X-Study-Token': studyToken } }),
   remove: (id: number) => api.delete(`/study-tasks/${id}`, { headers: { 'X-Study-Token': studyToken } }),
+  // 今日（或指定 date）到期未做的复习任务，供"今日待复习"卡片
+  dueReviews: (date?: string) =>
+    api.get<StudyTask[]>('/study-tasks/reviews/due', { params: { date }, headers: { 'X-Study-Token': studyToken } }),
+  // 进度热力图：最近 days 天（默认 90）每日完成度
+  heatmap: (days: number = 90) =>
+    api.get<DailyCompletion[]>('/study-tasks/heatmap', { params: { days }, headers: { 'X-Study-Token': studyToken } }),
+  // 区间任务（月视图用）：返回 [start, end] 内所有任务，前端按 date 分组
+  listRange: (start: string, end: string) =>
+    api.get<StudyTask[]>('/study-tasks', { params: { week_start: start, week_end: end }, headers: { 'X-Study-Token': studyToken } }),
 }
 
 // ------------------------- 命令面板 -------------------------
@@ -377,5 +397,46 @@ export const prefsApi = {
   get: () => api.get<FocusPrefs>('/settings/focus'),
   // 保存（只传要改的字段即可）
   update: (body: Partial<FocusPrefs>) => api.put<FocusPrefs>('/settings/focus', body),
+}
+
+// ------------------------- M6 奖励系统（reward）-------------------------
+export interface RewardBadgeDef {
+  badge_key: string
+  badge_name: string
+  description: string
+  earned: boolean
+  earned_at: string | null
+}
+export interface RewardState {
+  points: number
+  level: number
+  exp: number
+  exp_need: number
+  streak: number
+  last_checkin: string | null
+  badges: { badge_key: string; badge_name: string; earned_at: string }[]
+  all_badges: RewardBadgeDef[]
+  checkin_total: number
+}
+export interface RewardVideo {
+  id: number
+  title: string | null
+  path: string
+  period_start: string | null
+  period_end: string | null
+  created_at: string | null
+}
+
+export const reward = {
+  // 账户全景：积分 / 等级 / 经验 / 连续打卡 / 徽章 / 打卡总数
+  state: () => api.get<RewardState>('/reward'),
+  // 每日打卡
+  checkin: () => api.post<RewardState>('/reward/checkin'),
+  // 已得徽章
+  badges: () => api.get<{ badge_key: string; badge_name: string; earned_at: string }[]>('/reward/badges'),
+  // 复盘视频历史
+  videos: () => api.get<RewardVideo[]>('/reward/video'),
+  // 生成复盘视频（后端用 matplotlib + moviepy 合成 MP4，返回 {ok, id, title, file_url}）
+  generateVideo: () => api.post<RewardVideo & { ok: boolean; error?: string; file_url?: string }>('/reward/video/generate'),
 }
 
