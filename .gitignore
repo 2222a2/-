@@ -31,6 +31,9 @@ frontend/dist_*/
 *.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+# 前端 dev/tmp 运行残留（非源码、源码零引用，不进版本库）
+frontend/dev/
+frontend/tmp/
 
 # 本地工具与系统杂项
 .workbuddy/
