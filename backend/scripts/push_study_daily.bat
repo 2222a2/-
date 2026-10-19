@@ -16,8 +16,8 @@ REM ---- 微信点开链接的基地址（同 WiFi 用局域网IP，外出用 cloudflared 公网地址）
 set STUDY_WEB_BASE_URL=http://127.0.0.1:5173
 
 REM ---- 推送通道（四选一，此处用方糖 ServerChan，推到个人微信）----
-REM  ↓↓↓ 方糖 ServerChan key（2026-10-16 由郭郭提供，已填入）↓↓↓
-set SERVERCHAN_KEY=SCT427162TrYVlNoytB5SnzH0S892jgHpP
+REM  ↓↓↓ 方糖 ServerChan key：请填入【你自己的】ServerChan token（旧 key 已泄露，请去 sct.ftqq.com 后台轮换）↓↓↓
+set SERVERCHAN_KEY=your_serverchan_key_here
 
 REM ---- 选 Python 虚拟环境：优先 .venv2，回退 .venv，再回退系统 python ----
 set ROOT=%~dp0..
