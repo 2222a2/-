@@ -1,0 +1,78 @@
+#!/bin/sh
+# ============================================================================
+# 提交信息规范 lint · git commit-msg hook
+# ----------------------------------------------------------------------------
+# 规则：提交信息 subject（首行）须匹配 Conventional Commits：
+#        <type>(<scope>)?(!)?: <subject>
+#   type ∈ feat | fix | docs | chore | refactor | test | style | perf | build | ci | revert
+#
+# 逃生口：
+#   SKIP_COMMIT_MSG_LINT=1 git commit ...   临时跳过校验
+#   git commit --no-verify                  跳过所有 hooks（含本 hook）
+#
+# 说明：
+#   - 仅校验首行（subject）；正文（body）不限格式。
+#   - 合并提交（Merge ...）、fixup!/squash!/revert! 自动放行。
+#   - 历史首个提交「首次提交」信息量低，本 hook 仅约束「后续」提交。
+# ============================================================================
+
+if [ -n "$SKIP_COMMIT_MSG_LINT" ]; then
+  echo "[commit-msg] SKIP_COMMIT_MSG_LINT 已设置，跳过提交信息校验。"
+  exit 0
+fi
+
+MSG_FILE="$1"
+if [ -z "$MSG_FILE" ] || [ ! -f "$MSG_FILE" ]; then
+  echo "[commit-msg] 未收到提交信息文件路径，跳过校验。" >&2
+  exit 0
+fi
+
+# 读取首行 subject（跳过 # 注释行与纯空白行，取第一个有效行）
+# 注：|| [ -n "$line" ] 处理“末行无换行符”场景（部分编辑器会去掉尾部换行）。
+SUBJECT=""
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    \#*) continue ;;
+  esac
+  if [ -z "$SUBJECT" ] && [ -n "$(printf '%s' "$line" | tr -d '[:space:]')" ]; then
+    SUBJECT="$line"
+    break
+  fi
+done < "$MSG_FILE"
+
+if [ -z "$SUBJECT" ]; then
+  echo "[commit-msg] ❌ 提交信息为空，请填写 subject。" >&2
+  exit 1
+fi
+
+# 合并提交 / fixup! / squash! / revert! 放行（这类由 git/工具自动生成）
+case "$SUBJECT" in
+  Merge\ *)   exit 0 ;;
+  fixup!*)    exit 0 ;;
+  squash!*)   exit 0 ;;
+  revert!*)   exit 0 ;;
+esac
+
+TYPE_RE='^(feat|fix|docs|chore|refactor|test|style|perf|build|ci|revert)(\([^)]+\))?(!)?: .+'
+
+if printf '%s' "$SUBJECT" | grep -Eq "$TYPE_RE"; then
+  echo "[commit-msg] ✅ 提交信息符合规范。"
+  exit 0
+else
+  echo "" >&2
+  echo "[commit-msg] ❌ 提交信息不符合规范，已阻止提交。" >&2
+  echo "" >&2
+  echo "  首行格式: <type>(<scope>)?(!)?: <subject>" >&2
+  echo "  允许 type: feat fix docs chore refactor test style perf build ci revert" >&2
+  echo "" >&2
+  echo "  示例:" >&2
+  echo "    feat: 新增奖励系统积分计算" >&2
+  echo "    fix(auth): 修复登录 token 过期未刷新" >&2
+  echo "    docs: 更新 README 本地运行说明" >&2
+  echo "    chore: 升级依赖并刷新 lockfile" >&2
+  echo "" >&2
+  echo "  当前首行: $SUBJECT" >&2
+  echo "" >&2
+  echo "  紧急跳过: git commit --no-verify   或   SKIP_COMMIT_MSG_LINT=1 git commit ..." >&2
+  exit 1
+fi

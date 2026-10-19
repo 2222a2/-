@@ -105,6 +105,47 @@ npm run dev                 # 已配置 host=127.0.0.1
 ```
 前端所有 `/api/*` 请求经 Vite 代理转发到后端 8000，天然同源、免跨域。
 
+## 工程规范
+
+### 1. 提交信息规范（commit-msg lint）
+> 历史首个提交 `首次提交`（5fb4386）信息量低，本规范**仅约束后续提交**。
+> 校验由 `commit-msg` git hook 自动执行（见下方「启用 git hooks」）。
+
+提交信息 subject（首行）须符合 [Conventional Commits](https://www.conventionalcommits.org/)：
+
+```
+<type>(<scope>)?(!)?: <subject>
+```
+
+- **type**（必填，常用）：`feat`｜`fix`｜`docs`｜`chore`｜`refactor`｜`test`｜`style`｜`perf`｜`build`｜`ci`｜`revert`
+- **scope**（可选）：模块/影响面，如 `(auth)`、`(reward)`
+- **!**（可选）：标记破坏性变更
+- **subject**：祈使句、简明，如 `新增奖励系统积分计算`
+
+示例：
+```
+feat: 新增奖励系统积分计算
+fix(auth): 修复登录 token 过期未刷新
+docs: 更新 README 本地运行说明
+chore: 升级依赖并刷新 lockfile
+```
+
+逃生口（紧急时）：
+- 跳过全部 hooks：`git commit --no-verify`
+- 仅跳过本 lint：`SKIP_COMMIT_MSG_LINT=1 git commit ...`
+
+### 2. 虚拟环境命名：固定用 `.venv2`（不是 `.venv`）
+> 详细背景见上方「本地运行」注释块。结论：**保留 `.venv2`，命令继续用 `.venv2/Scripts/python.exe`**，
+> 不回退改名 `.venv`。`.gitignore` 已同时忽略 `.venv/` 与 `.venv2/`；README 自测命令（M2）亦按 `.venv2` 书写。
+
+### 启用 git hooks
+克隆/拉取后**只需跑一次**，把仓库内 hook 源安装到本地 `.git/hooks/`：
+- Windows：`scripts/install-hooks.bat`
+- macOS / Linux：`bash scripts/install-hooks.sh`
+
+安装后：每次 `git commit` 会先跑「收口即审计」一致性检查，再校验提交信息格式。
+跳过审计：`SKIP_CONSISTENCY_AUDIT=1 git commit ...`。
+
 ## M0 资料聚合底座（已完成）
 - **统一入库流水线** `ingest_card()`：所有来源都走「写 SQLite 卡片 → 同步进 FTS5 全文索引 →（可选）向量化进 chromadb」，保证“入库即可被搜到、可被 AI 引用”。
 - **四个入库通道**：① 网页剪藏 `POST /api/knowledge/clip`（后端 requests 抓正文，readability 优先、正则降级）；② 文件上传 `POST /api/knowledge/uploads`（txt/md 直读，pdf/docx 用可选库抽取，原始文件落 `data/uploads/` 留档）；③ 手动笔记 `POST /api/knowledge/notes`；④ 任务文档（M1 定稿时调用，本模块提供能力）。
