@@ -21,6 +21,7 @@ from . import analysis
 from . import docs
 from . import focus
 from . import prefs
+from . import reward
 
 
 app = FastAPI(title="工作学习一体化平台", version="0.3.0")
@@ -71,3 +72,5 @@ app.include_router(docs.router)
 app.include_router(focus.router)
 # 用户偏好设置：/api/settings/focus（番茄钟工作/休息时长，落库复用）
 app.include_router(prefs.router)
+# M6 奖励系统：/api/reward（积分/打卡/徽章/复盘视频）
+app.include_router(reward.router)

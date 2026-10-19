@@ -3,13 +3,14 @@ import { api, Health } from './api/client'
 import CommandPalette from './components/CommandPalette'
 import KnowledgePage from './components/KnowledgePage'
 import StudyTasksPage from './components/StudyTasksPage'
+import RewardPage from './components/RewardPage'
 import TaskPage from './components/TaskPage'
 import AnalysisPage from './components/AnalysisPage'
 import { DocEditorProvider } from './components/DocEditorProvider'
 import { FocusProvider } from './components/FocusProvider'
 import { FocusTimer } from './components/FocusTimer'
 
-type Page = 'home' | 'knowledge' | 'study' | 'tasks' | 'analysis'
+type Page = 'home' | 'knowledge' | 'study' | 'tasks' | 'analysis' | 'reward'
 
 // 深链：微信点 /study-tasks 直接进备考任务页（无需手动点导航）
 function initialPage(): Page {
@@ -39,6 +40,7 @@ export default function App() {
         <NavItem active={page === 'study'} onClick={() => setPage('study')}>📖 备考任务</NavItem>
         <NavItem active={page === 'analysis'} onClick={() => setPage('analysis')}>🧩 分析</NavItem>
         <NavItem active={page === 'tasks'} onClick={() => setPage('tasks')}>📋 任务</NavItem>
+        <NavItem active={page === 'reward'} onClick={() => setPage('reward')}>🏆 奖励</NavItem>
         <div style={{ marginTop: 'auto', fontSize: 12, color: '#999' }}>
           {health ? `后端 ${health.version} 已连通` : '后端未连通'}
           <br />⌘/Ctrl + K 命令面板
@@ -66,6 +68,7 @@ export default function App() {
         {page === 'study' && <StudyTasksPage />}
         {page === 'analysis' && <AnalysisPage />}
         {page === 'tasks' && <TaskPage />}
+        {page === 'reward' && <RewardPage />}
       </main>
 
       {/* 全局命令面板（任意页面可唤起） */}
