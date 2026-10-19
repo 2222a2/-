@@ -11,11 +11,56 @@ import sys
 import time
 import datetime
 import subprocess
+import ctypes
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BAT_PATH = os.path.join(SCRIPT_DIR, "push_study_daily.bat")
 # 记录"今天是否已跑过"，避免唤醒/重启后重复推送
 FLAG_FILE = os.path.join(SCRIPT_DIR, "..", "data", "last_push_date.txt")
+# 单实例锁文件：防止重复拉起导致 23:00 竞态双推
+LOCK_FILE = os.path.join(SCRIPT_DIR, "..", "data", "scheduler.lock")
+
+
+def _pid_alive(pid):
+    """Windows 下判断进程是否仍存活（STILL_ACTIVE=259）。"""
+    try:
+        PROCESS_QUERY_INFORMATION = 0x0400
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return code.value == 259
+    except Exception:
+        return False
+
+
+def acquire_singleton():
+    """用 O_EXCL 原子建锁，保证全局只有一个调度器在跑；其余实例立即退出。"""
+    for _ in range(5):
+        try:
+            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                with open(LOCK_FILE, "r", encoding="utf-8") as f:
+                    old = f.read().strip()
+                if old.isdigit() and _pid_alive(int(old)):
+                    print(f"[singleton] 已有实例 pid={old}，本进程退出")
+                    sys.exit(0)
+            except Exception:
+                pass
+            # 锁陈旧（持有者已死）则抢占
+            try:
+                os.remove(LOCK_FILE)
+            except Exception:
+                pass
+            continue
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+        os.close(fd)
+        return
+    print("[singleton] 无法获取锁，退出")
+    sys.exit(1)
 
 # 触发时间（小时:分钟）
 TRIGGER_HOUR = 23
@@ -69,6 +114,7 @@ def seconds_to_next_trigger():
 
 
 def main():
+    acquire_singleton()
     print(f"[启动] 备考推送常驻调度器（每天 {TRIGGER_HOUR:02d}:{TRIGGER_MINUTE:02d} 触发）")
     print(f"[启动] 脚本目录: {SCRIPT_DIR}")
     # 若启动时已过 23:00 且今天没跑过 -> 立即补跑一次（应对睡眠/未开机）
